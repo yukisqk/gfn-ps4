@@ -13,6 +13,9 @@ foreach ($path in @($toolchainRoot, $llvmBin, $dotnetRoot)) {
 
 $env:OO_PS4_TOOLCHAIN = $toolchainRoot
 $env:DOTNET_ROOT = $dotnetRoot
+# PkgTool.Core.exe esta compilado para .NET Core 3.0, que ya no se instala. Permitir que use el
+# runtime mas nuevo disponible (6, 8, 10...).
+$env:DOTNET_ROLL_FORWARD = 'Major'
 $env:Path = "$llvmBin;$dotnetRoot;$env:Path"
 
 Write-Output "OO_PS4_TOOLCHAIN=$env:OO_PS4_TOOLCHAIN"

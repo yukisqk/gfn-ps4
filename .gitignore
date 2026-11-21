@@ -57,3 +57,12 @@ desktop.ini
 .vscode/
 .idea/
 *.code-workspace
+
+# --- Arbol intermedio del build (scripts/build-*.ps1) ---------------------------------------------
+/build/gfn-client-ps4/
+/build/host-tests/
+/build/libpeer-ps4/
+/build/ps4/
+# Generados por el configure de FFmpeg
+/src/third_party/ffmpeg/doc/config.texi
+/src/third_party/ffmpeg/doc/examples/pc-uninstalled/

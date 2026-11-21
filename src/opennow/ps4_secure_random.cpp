@@ -1,6 +1,5 @@
 #include "ps4_secure_random.h"
 
-#include <orbis/Random.h>
 
 #include <algorithm>
 #include <cerrno>

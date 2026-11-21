@@ -7,6 +7,12 @@
 #include <orbis/Ssl.h>
 #include <orbis/Sysmodule.h>
 
+// OpenOrbis v0.5.4 declara `void sceHttpSetRecvTimeOut();` (sin parametros ni retorno). Se usa un
+// alias con la firma real de libSceHttp que apunta al MISMO simbolo, para compilar con cualquier
+// version de la cabecera sin redeclarar la funcion.
+extern "C" int32_t opennow_sceHttpSetRecvTimeOut(int32_t id, uint32_t usec)
+    __asm__("sceHttpSetRecvTimeOut");
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -127,7 +133,7 @@ HttpResponse HttpClient::Request(
         CheckOrbis(sceHttpSetConnectTimeOut(tmpl, timeout_us), "set HTTP connect timeout");
         CheckOrbis(sceHttpSetResolveTimeOut(tmpl, timeout_us), "set HTTP DNS timeout");
         CheckOrbis(sceHttpSetSendTimeOut(tmpl, timeout_us), "set HTTP send timeout");
-        CheckOrbis(sceHttpSetRecvTimeOut(tmpl, timeout_us), "set HTTP receive timeout");
+        CheckOrbis(opennow_sceHttpSetRecvTimeOut(tmpl, timeout_us), "set HTTP receive timeout");
         log_stage("create_connection");
         connection = sceHttpCreateConnectionWithURL(tmpl, url.c_str(), false);
         CheckOrbis(connection, "sceHttpCreateConnectionWithURL");

@@ -14,7 +14,12 @@ $objDir = Join-Path $build 'obj'
 $nativeDist = Join-Path $root 'build\libpeer-ps4\dist'
 $gfnArchive = Join-Path $root 'build\gfn-client-ps4\libgfn_client_ps4.a'
 $peerArchive = Join-Path $root 'build\libpeer-ps4\src\libpeer.a'
-$appVersion = '4.39'  # bump on every build
+$appVersion = '4.40'  # bump on every build
+# Las auditorias se lanzan con PowerShell 7 si esta instalado; si no, con Windows PowerShell.
+$psHost = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
+# Windows PowerShell 5.1 (y PowerShell 7 < 7.3) quita las comillas internas al pasar argumentos a un
+# programa nativo: clang recibia -DGFN_APP_VERSION=4.40 en vez de "4.40" y main.cpp no compilaba.
+$versionQuote = if ($PSVersionTable.PSVersion -ge [version]'7.3') { '"' } else { '\"' }
 $titleId = 'GFNP00001'
 $contentId = 'IV0000-GFNP00001_00-GFNPS4CLIENT0001'
 # Sony permite letras Y digitos en el Title ID (A-Z0-9), 9 caracteres. La validacion
@@ -83,7 +88,7 @@ $compileArgs = @(
     # ("version=3.30", "app_version=3.30" y la barra de estado) ADEMAS de en $appVersion, y era
     # cuestion de tiempo que se desincronizaran: de hecho la auditoria de build fallo por eso al subir
     # a 3.31. Con esta definicion hay UNA sola fuente de verdad.
-    ('-DGFN_APP_VERSION="' + $appVersion + '"'),
+    ('-DGFN_APP_VERSION=' + $versionQuote + $appVersion + $versionQuote),
     '-isysroot',$tc,'-isystem',(Join-Path $tc 'include'),
     '-isystem',(Join-Path $tc 'include\c++\v1'),'-I',(Join-Path $root 'src\third_party\cJSON'),
     '-I',(Join-Path $root 'src\opennow'),'-I',(Join-Path $nativeDist 'include'),
@@ -187,6 +192,9 @@ Copy-Item -LiteralPath (Join-Path $tc 'samples\system\assets\fonts\OFL.txt') -De
 #
 # 190x190 es el tamano al que se dibuja (156 px) mas un margen para que el reescalado del renderizador
 # nunca amplie la imagen y emborrone los modulos.
+# System.Drawing se carga aqui: PowerShell 7 lo trae cargado, Windows PowerShell 5.1 no, y las
+# imagenes QR lo usan antes que el icono (que ya hacia su propio Add-Type mas abajo).
+Add-Type -AssemblyName System.Drawing
 $qrRawSize = 190
 $qrAssets = @(
     @{ Source = 'tiktoklink.png';  Target = 'tiktok_qr.rgba'  },
@@ -294,14 +302,14 @@ Write-Output 'Install via GoldHEN Package Installer, then test UI, DualShock, ke
 # dentro de su panel. Los fallos de posicionamiento ya se escaparon dos veces a revision manual.
 $layoutAudit = Join-Path $PSScriptRoot 'audit-settings-layout.ps1'
 if (Test-Path $layoutAudit) {
-    & pwsh -NoProfile -ExecutionPolicy Bypass -File $layoutAudit
+    & $psHost -NoProfile -ExecutionPolicy Bypass -File $layoutAudit
     if ($LASTEXITCODE -ne 0) { throw "El layout de configuracion tiene problemas ($LASTEXITCODE)." }
 }
 
 $audit = Join-Path $PSScriptRoot 'audit-build.ps1'
 if (Test-Path $audit) {
     Write-Output ''
-    & pwsh -NoProfile -ExecutionPolicy Bypass -File $audit
+    & $psHost -NoProfile -ExecutionPolicy Bypass -File $audit
     if ($LASTEXITCODE -ne 0) {
         throw "La auditoria del binario fallo ($LASTEXITCODE). El PKG existe pero le faltan caracteristicas declaradas; revisa la tabla de arriba."
     }
@@ -316,7 +324,7 @@ if (Test-Path $audit) {
 $navAudit = Join-Path $PSScriptRoot 'audit-navigation.ps1'
 if (Test-Path $navAudit) {
     Write-Output ''
-    & pwsh -NoProfile -ExecutionPolicy Bypass -File $navAudit
+    & $psHost -NoProfile -ExecutionPolicy Bypass -File $navAudit
     if ($LASTEXITCODE -ne 0) {
         throw "La auditoria de navegacion fallo ($LASTEXITCODE). El dibujado y la navegacion no coinciden."
     }
@@ -335,7 +343,7 @@ if (Test-Path $navAudit) {
 $hostTests = Join-Path $PSScriptRoot 'run-host-tests.ps1'
 if (Test-Path $hostTests) {
     Write-Output ''
-    & pwsh -NoProfile -ExecutionPolicy Bypass -File $hostTests
+    & $psHost -NoProfile -ExecutionPolicy Bypass -File $hostTests
     if ($LASTEXITCODE -ne 0) {
         throw "Las pruebas de host fallaron ($LASTEXITCODE). La logica de la interfaz no es correcta."
     }

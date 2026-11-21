@@ -9,7 +9,7 @@
 #include <orbis/VideoOut.h>
 #include <orbis/Http.h>
 #include <orbis/Net.h>
-#include <orbis/Random.h>
+#include "../opennow/ps4_secure_random.h"  // sceRandomGetRandomNumber con su firma real (ver cabecera)
 #include <orbis/Ssl.h>
 #include <orbis/Sysmodule.h>
 #include <orbis/libkernel.h>
@@ -2890,6 +2890,7 @@ static const char* translateUi(const char* text) {
         ,{"MANDOS DETECTADOS: ","CONTROLLERS DETECTED: "},{"CONECTA UN MANDO USB O DUALSHOCK 4","CONNECT A USB CONTROLLER OR DUALSHOCK 4"}
         ,{"PULSADO","PRESSED"},{"GATILLOS L2 ","TRIGGERS L2 "},{"STICK IZQ ","LEFT STICK "},{"STICK DER ","RIGHT STICK "}
         ,{"IDIOMA / LANGUAGE","LANGUAGE"},{"ENGLISH","ENGLISH"}
+        ,{"CONECTANDO LA SENALIZACION SEGURA","CONNECTING SECURE SIGNALING"}
         ,{"MANTENER SESION INICIADA","KEEP ME SIGNED IN"},{"ACTIVADO","ON"},{"DESACTIVADO","OFF"}
         ,{"SESION GUARDADA EN ESTE PS4 (NO COMPARTAS /data/gfnps4)","SESSION SAVED ON THIS PS4 (DO NOT SHARE /data/gfnps4)"}
         ,{"CATALOGO PUBLICO DE GEFORCE NOW","PUBLIC GEFORCE NOW CATALOG"}

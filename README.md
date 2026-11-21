@@ -223,7 +223,20 @@ El repo no trae las herramientas: son más de 3 GB y cada una tiene su licencia.
 | PortableGit | El shell POSIX que pide el `configure` de FFmpeg |
 | .NET | `PkgTool.Core.exe`, para construir y validar el PKG |
 
-Van en `tools/`, que está en el `.gitignore`. Luego:
+Van en `tools/`, que está en el `.gitignore`. Notas que salieron al compilar en otro PC:
+
+- Funciona con OpenOrbis **v0.5.4** (`toolchain-llvm-18`), LLVM-MinGW **20260922** (msvcrt x86_64) y
+  CMake **3.31.12**. `tools/PortableGit` y `tools/dotnet` pueden ser enlaces (*junction*) a un Git para
+  Windows y a un .NET ya instalados. `PkgTool.Core.exe` pide .NET Core 3.0; `ps4-env.ps1` le deja usar
+  uno más nuevo (`DOTNET_ROLL_FORWARD=Major`).
+- mbedtls necesita Python con `jsonschema` y `jinja2` en `tools/python-deps`:
+  `python -m pip install --target tools\python-deps jsonschema jinja2`. Se usa el `python.exe` del PATH
+  (o el que indique `GFN_PS4_HOST_PYTHON`).
+- Sirve tanto Windows PowerShell 5.1 como PowerShell 7.
+- La primera vez tarda mucho (el `configure` de FFmpeg solo son ~25 min en un portátil); luego se
+  reutilizan las dependencias y solo se recompila la app.
+
+Luego:
 
 ```powershell
 . .\scripts\ps4-env.ps1        # prepara el entorno

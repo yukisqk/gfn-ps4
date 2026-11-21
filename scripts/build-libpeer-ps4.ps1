@@ -12,7 +12,14 @@ $jansson = Join-Path $root 'src\third_party\jansson'
 $opus = Join-Path $root 'src\third_party\opus'
 $toolchain = Join-Path $PSScriptRoot 'cmake\orbis-ps4-x64.cmake'
 $build = Join-Path $root 'build\libpeer-ps4'
+# Python de host. Antes solo valia el runtime del entorno del autor (Codex); ahora se puede indicar
+# con GFN_PS4_HOST_PYTHON o se usa el python.exe que haya en el PATH.
 $pythonRuntime = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python'
+if (-not (Test-Path -LiteralPath (Join-Path $pythonRuntime 'python.exe'))) {
+    $hostPython = $env:GFN_PS4_HOST_PYTHON
+    if (-not $hostPython) { $found = Get-Command python.exe -ErrorAction SilentlyContinue; if ($found) { $hostPython = $found.Source } }
+    if ($hostPython -and (Test-Path -LiteralPath $hostPython)) { $pythonRuntime = Split-Path -Parent $hostPython }
+}
 
 foreach ($required in @($cmake,$make,$libpeer,$jansson,$opus,$toolchain)) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Required port dependency not found: $required" }
