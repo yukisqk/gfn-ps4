@@ -14,7 +14,7 @@ $objDir = Join-Path $build 'obj'
 $nativeDist = Join-Path $root 'build\libpeer-ps4\dist'
 $gfnArchive = Join-Path $root 'build\gfn-client-ps4\libgfn_client_ps4.a'
 $peerArchive = Join-Path $root 'build\libpeer-ps4\src\libpeer.a'
-$appVersion = '4.40'  # bump on every build
+$appVersion = '4.41'  # bump on every build
 # Las auditorias se lanzan con PowerShell 7 si esta instalado; si no, con Windows PowerShell.
 $psHost = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
 # Windows PowerShell 5.1 (y PowerShell 7 < 7.3) quita las comillas internas al pasar argumentos a un

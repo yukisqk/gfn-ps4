@@ -369,6 +369,17 @@ static const char* catalogFilters[] = {"VINCULADOS", "TODOS", "STEAM", "EPIC", "
 static std::atomic<bool> catalogFullLoaded(false);
 static std::atomic<bool> pendingCatalogIsFull(false);
 static std::atomic<bool> catalogFullRequested(false);
+// Motivo real del ultimo fallo del catalogo. Antes la pantalla solo decia "ERROR -1" y no habia
+// forma de saber que habia pasado sin sacar los logs de la consola.
+static std::mutex catalogErrorMutex;
+static std::string catalogErrorText;
+// La biblioteca de la cuenta llego vacia o fallo y se cargo el catalogo completo en su lugar: al
+// publicarlo se cambia el filtro a TODOS para que no aparezca una lista vacia.
+static std::atomic<bool> pendingCatalogPreferAll(false);
+static void setCatalogErrorText(const std::string& text) {
+    std::lock_guard<std::mutex> lock(catalogErrorMutex);
+    catalogErrorText=text.substr(0,240);
+}
 struct CatalogFavorite { std::string title; std::string store; };
 static std::vector<CatalogFavorite> catalogFavorites;
 static std::unordered_set<std::string> catalogFavoriteIndex;
@@ -2228,6 +2239,11 @@ static void publishPendingCatalog() {
     if(count<=0) return;
     memcpy(catalogGames,pendingCatalogGames,static_cast<size_t>(count)*sizeof(CatalogGame));
     catalogFullLoaded.store(pendingCatalogIsFull.load(std::memory_order_acquire),std::memory_order_release);
+    if(pendingCatalogPreferAll.exchange(false) && catalogStoreFilter==0) {
+        catalogStoreFilter=1;
+        rebuildVisibleCatalog();
+        opennow::LogAppLifecycleEvent("CATALOG_FILTER","TODOS reason=library_empty_or_failed");
+    }
     catalogCount.store(count,std::memory_order_release);
     rebuildVisibleCatalog();
     catalogHttpStatus.store(200);
@@ -3676,6 +3692,8 @@ static int fetchCatalogImpl(void*) {
                 return 0;
             } catch(const std::exception& error) {
                 catalogFullRequested.store(true,std::memory_order_release);
+                setCatalogErrorText(error.what());
+                pendingCatalogPreferAll.store(false);
                 catalogError.store(-1); catalogState.store(3);
                 opennow::LogAppLifecycleEvent("CATALOG_FAILED",("source=full_catalog error="+std::string(error.what())).c_str());
                 free(body);
@@ -3718,6 +3736,16 @@ static int fetchCatalogImpl(void*) {
                 ++count;
             }
             SDL_LockMutex(authMutex); authSession=session; SDL_UnlockMutex(authMutex);
+            if(count==0) {
+                // Biblioteca vacia (cuenta nueva o sin juegos vinculados): antes acababa en
+                // "ERROR -22" y no se podia jugar nada. Se carga el catalogo completo del proveedor.
+                opennow::LogAppLifecycleEvent("CATALOG_STAGE",("account_library_empty received="+
+                    std::to_string(libraryGames.size())+" fallback=full_catalog").c_str());
+                pendingCatalogPreferAll.store(true);
+                catalogFullRequested.store(true,std::memory_order_release);
+                free(body);
+                return fetchCatalogImpl(nullptr);
+            }
             catalogHttpStatus.store(200);
             catalogError.store(count==0?-22:0);
             if(count>0) {
@@ -3733,12 +3761,15 @@ static int fetchCatalogImpl(void*) {
             free(body);
             return 0;
         } catch(const std::exception& error) {
-            catalogError.store(-1);
-            catalogState.store(3);
+            // La biblioteca fallo (p. ej. NVIDIA cambio la consulta): se intenta el catalogo completo,
+            // que usa otra consulta, para que se pueda seguir jugando.
             opennow::LogAppLifecycleEvent("CATALOG_FAILED",("source=authenticated error="+
-                std::string(error.what())).c_str());
+                std::string(error.what())+" fallback=full_catalog").c_str());
+            setCatalogErrorText(std::string("BIBLIOTECA: ")+error.what());
+            pendingCatalogPreferAll.store(true);
+            catalogFullRequested.store(true,std::memory_order_release);
             free(body);
-            return 0;
+            return fetchCatalogImpl(nullptr);
         }
     }
 
@@ -3859,6 +3890,7 @@ static void startCatalogFetch() {
     if(authState.load()==3 && catalogState.load()==2 && catalogCount.load()>0 && !fullRequested) return;
     if(!fullRequested) catalogCount.store(0);
     catalogHttpStatus.store(0); catalogError.store(0);
+    setCatalogErrorText("");
     pendingCatalogCount.store(0); pendingCatalogReady.store(false,std::memory_order_release);
     catalogVisibleCount=0;
     catalogState.store(1); catalogSelection=0; catalogOffset=0;
@@ -7485,7 +7517,14 @@ static void draw() {
             if(catalogHttpStatus.load()>0) snprintf(err,sizeof(err),"NO SE PUDO CARGAR: HTTP %d",catalogHttpStatus.load());
             else snprintf(err,sizeof(err),"NO SE PUDO CARGAR: ERROR %d",catalogError.load());
             label(120,350,err,3);
-            label(120,420,"X: REINTENTAR     CIRCULO: VOLVER",2);
+            std::string reason;
+            { std::lock_guard<std::mutex> lock(catalogErrorMutex); reason=catalogErrorText; }
+            if(!reason.empty()) {
+                // Dos lineas de ~110 caracteres: suficiente para el mensaje del servidor.
+                label(120,410,(std::string(language==0?"MOTIVO: ":"REASON: ")+reason.substr(0,110)).c_str(),2);
+                if(reason.size()>110) label(120,445,reason.substr(110,120).c_str(),2);
+            }
+            label(120,reason.empty()?420:495,"X: REINTENTAR     CIRCULO: VOLVER",2);
         } else if(state==2) {
             char countLine[160]; snprintf(countLine,sizeof(countLine),"%d/%d JUEGOS | L1/R1 CATEGORIA | L3/R3 FAV | TRIANGULO BUSCAR",catalogVisibleCount,catalogCount.load());
             label(120,270,countLine,2);
