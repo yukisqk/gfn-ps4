@@ -277,7 +277,9 @@ std::string ResolveVpcId(
 {
     const StreamSettings settings = LoadStreamSettings();
     const std::string streaming_base_url = server_location::ResolveStreamingBaseUrl(
-        settings.region, session.provider.streaming_service_url);
+        server_location::RegionForProvider(
+            settings.region, settings.region_provider_code, session.provider.code),
+        session.provider.streaming_service_url);
     if (streaming_base_url.empty())
         return "GFN-PC";
 

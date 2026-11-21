@@ -58,6 +58,23 @@ std::string SelectBestMeasuredRegionUrl(const RegionRange& regions)
     return best_url;
 }
 
+// Devuelve la region guardada solo si pertenece al proveedor de la cuenta activa; en otro caso
+// "Auto". Sin esto, una region manual elegida con una cuenta de NVIDIA se seguia usando con una
+// cuenta de un socio (p. ej. Digevo en Colombia): serverInfo devolvia el VPC de NVIDIA, el
+// catalogo salia vacio o con juegos de otra region y las sesiones se pedian a servidores donde
+// esa cuenta no tiene acceso.
+inline std::string RegionForProvider(
+    const std::string& selected_region,
+    const std::string& region_provider_code,
+    const std::string& active_provider_code)
+{
+    if (IsAutomatic(selected_region))
+        return "Auto";
+    const std::string owner = region_provider_code.empty() ? "NVIDIA" : region_provider_code;
+    const std::string active = active_provider_code.empty() ? "NVIDIA" : active_provider_code;
+    return owner == active ? selected_region : std::string("Auto");
+}
+
 inline std::string ResolveStreamingBaseUrl(
     const std::string& selected_region,
     const std::string& provider_url,

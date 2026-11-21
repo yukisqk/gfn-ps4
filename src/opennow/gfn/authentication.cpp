@@ -495,7 +495,9 @@ std::string FetchVpcId(const HttpClient& http_client, const AuthSession& session
 
     const StreamSettings settings = LoadStreamSettings();
     const std::string base_url = server_location::ResolveStreamingBaseUrl(
-        settings.region, session.provider.streaming_service_url);
+        server_location::RegionForProvider(
+            settings.region, settings.region_provider_code, session.provider.code),
+        session.provider.streaming_service_url);
     if (base_url.empty())
         return "NP-AMS-08";
     const std::string url = base_url + "v2/serverInfo";
@@ -660,11 +662,32 @@ AuthSession GfnClient::LoginWithQrCode(
                 "urn:ietf:params:oauth:grant-type:device_code", true) +
             "&device_code=" + UrlEncode(device_code, true) +
             "&client_id=" + UrlEncode(kDeviceClientId, true);
-        const HttpResponse token_response = http_client_.Post(
-            kTokenEndpoint,
-            kDeviceUserAgent,
-            BuildDeviceAuthHeaders(),
-            token_body);
+        // Un fallo PASAJERO mientras se espera el QR (wifi que se corta un segundo, un 5xx con una
+        // pagina HTML, un 429) no debe tirar todo el inicio de sesion: antes LoadJson lanzaba
+        // "JSON parse failed" y habia que volver a empezar. Se reintenta en el siguiente sondeo
+        // hasta que caduque el codigo.
+        HttpResponse token_response;
+        try
+        {
+            token_response = http_client_.Post(
+                kTokenEndpoint,
+                kDeviceUserAgent,
+                BuildDeviceAuthHeaders(),
+                token_body);
+        }
+        catch (const std::exception& e)
+        {
+            AppendAuthLog("auth-device: token poll transport error; retrying error=" +
+                          std::string(e.what()));
+            continue;
+        }
+        if (token_response.status_code != 200 &&
+            auth::IsTemporaryHttpStatus(token_response.status_code))
+        {
+            AppendAuthLog("auth-device: token poll temporary HTTP " +
+                          std::to_string(token_response.status_code) + "; retrying");
+            continue;
+        }
         JsonPtr token_json = LoadJson(token_response.body);
         if (token_response.status_code == 200)
         {

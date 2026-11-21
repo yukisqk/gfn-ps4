@@ -112,7 +112,10 @@ StreamSettings Sanitize(StreamSettings settings)
         settings.codec = "H264";
 
     if (server_location::IsAutomatic(settings.region))
+    {
         settings.region = "Auto";
+        settings.region_provider_code.clear();
+    }
     else
     {
         settings.region =
@@ -260,6 +263,8 @@ StreamSettings LoadStreamSettings()
     settings.bitrate_kbps = JsonInt(root.get(), "bitrate_kbps", settings.bitrate_kbps);
     settings.codec        = JsonField(root.get(), "codec", settings.codec);
     settings.region       = JsonField(root.get(), "region", settings.region);
+    settings.region_provider_code =
+        JsonField(root.get(), "region_provider_code", settings.region_provider_code);
     settings.audio_enabled = JsonBool(root.get(), "audio_enabled", settings.audio_enabled);
     settings.audio_volume = JsonInt(root.get(), "audio_volume", settings.audio_volume);
     const int gain_version = JsonInt(root.get(), "audio_gain_version", 0);
@@ -308,6 +313,8 @@ bool SaveStreamSettings(const StreamSettings& settings)
     json_object_set_new(root.get(), "bitrate_kbps", json_integer(clean.bitrate_kbps));
     json_object_set_new(root.get(), "codec", json_string(clean.codec.c_str()));
     json_object_set_new(root.get(), "region", json_string(clean.region.c_str()));
+    json_object_set_new(
+        root.get(), "region_provider_code", json_string(clean.region_provider_code.c_str()));
     json_object_set_new(root.get(), "audio_enabled", json_boolean(clean.audio_enabled));
     json_object_set_new(root.get(), "audio_volume", json_integer(clean.audio_volume));
     json_object_set_new(root.get(), "audio_gain_version", json_integer(4));

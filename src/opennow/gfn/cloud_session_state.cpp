@@ -254,7 +254,9 @@ std::string ResolveConfiguredStreamingBaseUrl(const AuthSession& session)
 {
     const StreamSettings settings = LoadStreamSettings();
     const std::string base_url = server_location::ResolveStreamingBaseUrl(
-        settings.region, session.provider.streaming_service_url);
+        server_location::RegionForProvider(
+            settings.region, settings.region_provider_code, session.provider.code),
+        session.provider.streaming_service_url);
     if (base_url.empty())
         throw std::runtime_error("The selected GeForce NOW server location is invalid.");
     return base_url;

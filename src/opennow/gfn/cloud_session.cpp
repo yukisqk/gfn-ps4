@@ -24,9 +24,11 @@ SessionInfo GfnClient::StartSession(AuthSession& session, const std::string& lau
 
     const StreamSettings stream_settings = LoadStreamSettings();
     const std::string proxy_url = community_proxy::EnabledUrl(stream_settings);
+    const std::string selected_region = server_location::RegionForProvider(
+        stream_settings.region, stream_settings.region_provider_code, session.provider.code);
     std::string automatic_region_url;
     std::string automatic_region_trace;
-    if (server_location::IsAutomatic(stream_settings.region))
+    if (server_location::IsAutomatic(selected_region))
     {
         try
         {
@@ -61,7 +63,7 @@ SessionInfo GfnClient::StartSession(AuthSession& session, const std::string& lau
         }
     }
     const std::string streaming_base_url = server_location::ResolveStreamingBaseUrl(
-        stream_settings.region,
+        selected_region,
         session.provider.streaming_service_url,
         automatic_region_url);
     if (streaming_base_url.empty())

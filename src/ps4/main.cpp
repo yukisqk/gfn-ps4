@@ -298,8 +298,8 @@ static int gameLanguage = 0;
 // En modo NATIVO se conserva el comportamiento de siempre.
 static int scaleMode = 0;   // 0 = 720P FIJO, 1 = 1080P FIJO
 static int savedScaleMode = 0;
-static int decoderMode = 0;
-static int savedDecoderMode = 0;
+static int decoderMode = 2; // 2 = SOFTWARE: el decodificador por hardware no esta disponible
+static int savedDecoderMode = 2;
 static int sharpnessLevel = 0;
 static int savedSharpnessLevel = 0;
 static int savedImageQualityMode = 0;
@@ -315,6 +315,10 @@ static int inputDevice = 2; // 0 controller, 1 keyboard/mouse, 2 both
 static int savedInputDevice = 2;
 static std::string streamRegion = "Auto";
 static std::string savedStreamRegion = "Auto";
+// Proveedor (NVIDIA, Digevo, ...) al que pertenece la region manual. Una region de NVIDIA no es
+// valida para una cuenta de un socio de la Alliance y viceversa; el nucleo la ignora si no coincide.
+static std::string streamRegionProvider;
+static std::string savedStreamRegionProvider;
 static std::vector<opennow::StreamRegion> settingsRegions;
 static std::mutex settingsRegionsMutex;
 static std::atomic<int> settingsRegionState{0}; // 0 idle, 1 loading, 2 ready, 3 unavailable
@@ -375,6 +379,19 @@ static SDL_mutex* authMutex = NULL;
 static opennow::AuthSession authSession;
 static opennow::QrLoginChallenge authChallenge;
 static std::string authError;
+// PROVEEDOR DE INICIO DE SESION.
+// Antes el login usaba SIEMPRE el primer proveedor de la lista (NVIDIA). Las cuentas de los socios
+// de la GeForce NOW Alliance (p. ej. Digevo en Colombia/Chile) acababan autorizando una cuenta
+// NVIDIA distinta: habia que crear una cuenta nueva, el catalogo no era el de la suscripcion y no
+// se podia entrar a los servidores del socio. Ahora el usuario elige el proveedor en la pantalla de
+// inicio de sesion y la eleccion se recuerda.
+static std::vector<opennow::LoginProvider> loginProviders;   // protegido por authMutex
+static std::string loginProviderCode;                         // protegido por authMutex
+static std::string loginProviderName;                         // protegido por authMutex
+static std::atomic<bool> loginRestartRequested(false);
+static const char* kLoginProviderPath="/data/gfnps4/login_provider.txt";
+static const char* kLoginProviderTempPath="/data/gfnps4/login_provider.tmp";
+static void cycleLoginProvider(int direction);
 static std::atomic<int> launchState(0); // 0 idle, 1 preparando, 2 lista, 3 error
 static std::atomic<bool> launchCancelled(false);
 static SDL_Thread* launchThread=NULL;
@@ -2872,9 +2889,9 @@ static const char* translateUi(const char* text) {
         ,{"PRUEBA DE MANDO","GAMEPAD TESTER"},{"PROBADOR DE MANDO","GAMEPAD TESTER"}
         ,{"MANDOS DETECTADOS: ","CONTROLLERS DETECTED: "},{"CONECTA UN MANDO USB O DUALSHOCK 4","CONNECT A USB CONTROLLER OR DUALSHOCK 4"}
         ,{"PULSADO","PRESSED"},{"GATILLOS L2 ","TRIGGERS L2 "},{"STICK IZQ ","LEFT STICK "},{"STICK DER ","RIGHT STICK "}
-        ,{"IDIOMA / LANGUAGE","LANGUAGE"},{"ESPAÃƒÆ’Ã¢â‚¬ËœOL","SPANISH"},{"ENGLISH","ENGLISH"}
+        ,{"IDIOMA / LANGUAGE","LANGUAGE"},{"ENGLISH","ENGLISH"}
         ,{"MANTENER SESION INICIADA","KEEP ME SIGNED IN"},{"ACTIVADO","ON"},{"DESACTIVADO","OFF"}
-        ,{"SESION GUARDADA CIFRADA EN ESTE PS4","SESSION SAVED IN ENCRYPTED LOCAL VAULT"}
+        ,{"SESION GUARDADA EN ESTE PS4 (NO COMPARTAS /data/gfnps4)","SESSION SAVED ON THIS PS4 (DO NOT SHARE /data/gfnps4)"}
         ,{"CATALOGO PUBLICO DE GEFORCE NOW","PUBLIC GEFORCE NOW CATALOG"}
         ,{"INICIA SESION PARA PODER JUGAR","SIGN IN TO PLAY"}
         // --- Anadidas para cerrar los huecos que detecto scripts/audit-translations.ps1.
@@ -3243,7 +3260,13 @@ static void nav(int direction) {
         }
     }
     else if (page==1) selection=(selection+direction+15)%15;
-    else if (page==4) selection=(selection+direction+3)%3;
+    else if (page==4) {
+        // Filas de arriba abajo: 3 = proveedor, 2 = mantener sesion, 0/1 = botones inferiores.
+        static const int kRowOfSelection[4]={2,2,1,0};
+        static const int kSelectionOfRow[3]={3,2,0};
+        const int row=kRowOfSelection[(selection>=0 && selection<4)?selection:0];
+        selection=kSelectionOfRow[(row+direction+3)%3];
+    }
     else if (page==3 && catalogState.load()==2) {
         const int count=catalogVisibleCount;
         if(count>0) {
@@ -3296,7 +3319,8 @@ static void adjust(int direction) {
     case 5: imageQualityMode=(imageQualityMode+direction+3)%3; break;  // Original/Clarity/Adaptive
     case 6: {
         audioBufferMs += direction*10;
-        if(audioBufferMs<20) audioBufferMs=20;
+        // Minimo 30: StreamSettings recorta a 30-100 ms, asi que 20 se mostraba pero no se aplicaba.
+        if(audioBufferMs<30) audioBufferMs=30;
         if(audioBufferMs>80) audioBufferMs=80;
         break;
     }
@@ -3343,15 +3367,49 @@ static void moveHorizontal(int direction) {
     }
     else if(page==1) adjust(direction);
     else if(page==4 && selection<2) selection=(selection+direction+2)%2;
+    else if(page==4 && selection==3) cycleLoginProvider(direction);
     opennow::LogAppLifecycleEvent("UI_HORIZONTAL",("page="+std::to_string(page)+" direction="+std::to_string(direction)+" selection="+std::to_string(page==3?catalogSelection:selection)+" resolution="+std::to_string(resolution)+" bitrate="+std::to_string(bitrate)+" fps="+std::to_string(fps)).c_str());
+}
+static opennow::LoginProvider pickLoginProvider(const std::vector<opennow::LoginProvider>& providers,const std::string& code) {
+    for(const auto& provider:providers) if(!code.empty() && provider.code==code) return provider;
+    return providers.front();
+}
+static void loadLoginProviderPreference() {
+    FILE* file=fopen(kLoginProviderPath,"r");
+    if(!file) return;
+    char buffer[96]{};
+    std::string code;
+    if(fgets(buffer,sizeof(buffer),file)) code=buffer;
+    fclose(file);
+    while(!code.empty() && (code.back()=='\n' || code.back()=='\r' || code.back()==' ')) code.pop_back();
+    if(code.empty()) return;
+    SDL_LockMutex(authMutex); loginProviderCode=code; SDL_UnlockMutex(authMutex);
+    opennow::LogAppLifecycleEvent("AUTH_PROVIDER_PREFERENCE_LOADED",("code="+code).c_str());
+}
+static void saveLoginProviderPreference(const std::string& code) {
+    mkdir("/data/gfnps4",0777);
+    FILE* file=fopen(kLoginProviderTempPath,"w");
+    if(!file) return;
+    bool ok=fprintf(file,"%s\n",code.c_str())>0;
+    if(fclose(file)!=0) ok=false;
+    if(!ok || rename(kLoginProviderTempPath,kLoginProviderPath)!=0) std::remove(kLoginProviderTempPath);
 }
 static int loginWithGfn(void*) {
     opennow::LogAppLifecycleEvent("AUTH_WORKER_STARTED");
+    for(;;) {
     try {
         opennow::GfnClient client;
         const auto providers=client.FetchLoginProviders();
         if(providers.empty()) throw std::runtime_error("NVIDIA no devolvio proveedores de inicio de sesion.");
-        auto session=client.LoginWithQrCode(providers.front(),[](const opennow::QrLoginChallenge& challenge) {
+        SDL_LockMutex(authMutex);
+        loginProviders=providers;
+        const opennow::LoginProvider provider=pickLoginProvider(providers,loginProviderCode);
+        loginProviderCode=provider.code;
+        loginProviderName=provider.display_name;
+        SDL_UnlockMutex(authMutex);
+        opennow::LogAppLifecycleEvent("AUTH_PROVIDER_SELECTED",("code="+provider.code+" providers="+std::to_string(providers.size())).c_str());
+        if(authCancelled.load()) throw std::runtime_error("QR login was cancelled");
+        auto session=client.LoginWithQrCode(provider,[](const opennow::QrLoginChallenge& challenge) {
             SDL_LockMutex(authMutex);
             authChallenge=challenge;
             SDL_UnlockMutex(authMutex);
@@ -3370,16 +3428,35 @@ static int loginWithGfn(void*) {
         authSession.persistence_enabled=rememberLogin;
         authError.clear();
         SDL_UnlockMutex(authMutex);
+        // La cache del catalogo y la lista de regiones NO llevan clave de cuenta: si se quedaban las
+        // de una cuenta anterior (p. ej. NVIDIA), la cuenta nueva veia una biblioteca ajena durante 24 h.
+        std::remove(kAccountCatalogSnapshotPath); std::remove(kAccountCatalogSnapshotTempPath);
+        std::remove(kFullCatalogSnapshotPath); std::remove(kFullCatalogSnapshotTempPath);
+        { std::lock_guard<std::mutex> lock(settingsRegionsMutex); settingsRegions.clear(); }
+        settingsRegionState.store(0);
+        // Un catalogo PUBLICO ya cargado (estado 2) hacia que startCatalogFetch no pidiera nunca el
+        // catalogo de la cuenta tras iniciar sesion.
+        if(catalogState.load()!=1) { catalogState.store(0); catalogCount.store(0); }
         authState.store(3);
-        opennow::LogAppLifecycleEvent("AUTH_SUCCEEDED");
+        opennow::LogAppLifecycleEvent("AUTH_SUCCEEDED",("provider="+session.provider.code).c_str());
+        return 0;
     } catch(const std::exception& error) {
+        if(loginRestartRequested.exchange(false)) {
+            // Cambio de proveedor mientras se esperaba el QR: se pide un codigo nuevo al proveedor elegido.
+            authCancelled.store(false);
+            SDL_LockMutex(authMutex); authChallenge=opennow::QrLoginChallenge{}; authError.clear(); SDL_UnlockMutex(authMutex);
+            authState.store(1);
+            opennow::LogAppLifecycleEvent("AUTH_PROVIDER_RESTART");
+            continue;
+        }
         SDL_LockMutex(authMutex);
         authError=error.what();
         SDL_UnlockMutex(authMutex);
         authState.store(authCancelled.load()?0:4);
         opennow::LogAppLifecycleEvent(authCancelled.load()?"AUTH_CANCELLED":"AUTH_FAILED");
+        return 0;
     }
-    return 0;
+    }
 }
 static void startGfnLogin() {
     if(authThread && authState.load()!=1 && authState.load()!=2) {
@@ -3387,6 +3464,7 @@ static void startGfnLogin() {
     }
     if(authThread) return;
     authCancelled.store(false);
+    loginRestartRequested.store(false);
     authState.store(1);
     opennow::LogAppLifecycleEvent("AUTH_START");
     SDL_LockMutex(authMutex); authError.clear(); authChallenge=opennow::QrLoginChallenge{}; SDL_UnlockMutex(authMutex);
@@ -3394,7 +3472,36 @@ static void startGfnLogin() {
     if(!authThread) { authError="No se pudo iniciar el proceso de inicio de sesion."; authState.store(4); }
 }
 static void cancelGfnLogin() {
+    loginRestartRequested.store(false);
     if(authThread && (authState.load()==1 || authState.load()==2)) authCancelled.store(true);
+}
+static void cycleLoginProvider(int direction) {
+    // Con la sesion iniciada el proveedor es el de la cuenta: para cambiarlo hay que cerrar sesion.
+    if(authState.load()==3) return;
+    std::string code;
+    size_t count=0;
+    SDL_LockMutex(authMutex);
+    count=loginProviders.size();
+    if(count>0) {
+        size_t current=0;
+        for(size_t i=0;i<count;++i) if(loginProviders[i].code==loginProviderCode) { current=i; break; }
+        const size_t next=(current+(direction<0?count-1:1))%count;
+        loginProviderCode=loginProviders[next].code;
+        loginProviderName=loginProviders[next].display_name;
+        code=loginProviderCode;
+    }
+    SDL_UnlockMutex(authMutex);
+    if(count==0) {
+        // La lista aun no se ha descargado: se pide ahora (el login la carga).
+        if(authState.load()!=1 && authState.load()!=2) startGfnLogin();
+        return;
+    }
+    saveLoginProviderPreference(code);
+    opennow::LogAppLifecycleEvent("AUTH_PROVIDER_CHANGED",("code="+code).c_str());
+    const int state=authState.load();
+    if(state==1 || state==2) {
+        if(authThread) { loginRestartRequested.store(true); authCancelled.store(true); }
+    } else startGfnLogin();
 }
 // Persistent HTTP/SSL context for probe and speed test
 static int g_probeNetPool = -1;
@@ -3555,7 +3662,7 @@ static int fetchCatalogImpl(void*) {
                     if(count>=2400 || !result.next_cursor) break;
                     cursor=*result.next_cursor;
                 } while(pages<50);
-                if(count==0) throw std::runtime_error("El catÃƒÆ’Ã‚Â¡logo completo no devolviÃƒÆ’Ã‚Â³ juegos.");
+                if(count==0) throw std::runtime_error("El catalogo completo no devolvio juegos.");
                 SDL_LockMutex(authMutex); authSession=session; SDL_UnlockMutex(authMutex);
                 saveCatalogSnapshot(pendingCatalogGames,count,true);
                 pendingCatalogCount.store(count,std::memory_order_relaxed);
@@ -3823,6 +3930,13 @@ static void startSettingsRegionFetch() {
 }
 static std::string settingsRegionLabel() {
     if(streamRegion=="Auto") return language==0?"AUTOMATICA":"AUTOMATIC";
+    if(authState.load()==3) {
+        std::string active;
+        SDL_LockMutex(authMutex); active=authSession.provider.code; SDL_UnlockMutex(authMutex);
+        const std::string owner=streamRegionProvider.empty()?"NVIDIA":streamRegionProvider;
+        if((active.empty()?std::string("NVIDIA"):active)!=owner)
+            return language==0?"AUTOMATICA (REGION DE OTRA CUENTA)":"AUTOMATIC (REGION OF ANOTHER ACCOUNT)";
+    }
     std::lock_guard<std::mutex> lock(settingsRegionsMutex);
     for(const auto& item:settingsRegions) if(item.url==streamRegion)
         return item.name+(item.ping_ms>=0?" | "+std::to_string(item.ping_ms)+" ms":" | SIN MEDICION");
@@ -3835,6 +3949,8 @@ static void commitSettingsRegionSelection() {
         if(static_cast<size_t>(settingsRegionSelection-1)<settingsRegions.size())
             streamRegion=settingsRegions[static_cast<size_t>(settingsRegionSelection-1)].url;
     }
+    if(streamRegion=="Auto") streamRegionProvider.clear();
+    else { SDL_LockMutex(authMutex); streamRegionProvider=authSession.provider.code; SDL_UnlockMutex(authMutex); }
     opennow::LogAppLifecycleEvent("STREAM_REGION_SELECTED",streamRegion=="Auto"?"region=Auto":streamRegion.c_str());
     opennow::TraceAppAction("REGION_PICKER_SELECT",streamRegion=="Auto"?"region=Auto":streamRegion.c_str());
     settingsRegionPickerVisible=false;
@@ -3842,6 +3958,7 @@ static void commitSettingsRegionSelection() {
 static void loadSettings() {
     const opennow::StreamSettings stream=opennow::LoadStreamSettings();
     streamRegion=savedStreamRegion=stream.region;
+    streamRegionProvider=savedStreamRegionProvider=stream.region_provider_code;
 
     // Subfase 2.2c: Stream settings defaults (Resolution: 0=Auto, 1=720p, 2=1080p)
     // Default to 720p. With the software H.264 decoder this console cannot hold
@@ -3886,7 +4003,7 @@ static void loadSettings() {
         // El modo de calidad se reordeno en la 2.92b (Original pasa a ser 0). Un valor guardado
         // de una version anterior sigue siendo valido porque el rango es el mismo 0-2.
         if(fields>=9 && q>=0 && q<=2) imageQualityMode=savedImageQualityMode=q;
-        if(fields>=10 && ab>=10 && ab<=120) audioBufferMs=savedAudioBufferMs=ab;
+        if(fields>=10 && ab>=10 && ab<=120) audioBufferMs=savedAudioBufferMs=std::max(30,std::min(80,ab));
         if(fields>=11 && gl>=0 && gl<=7) gameLanguage=savedGameLanguage=gl;
         // REALCE FORZADO A DESACTIVADO.
         //
@@ -3931,8 +4048,16 @@ static void loadSettings() {
             std::snprintf(shDetail,sizeof(shDetail),"saved=%d applied=%d",sh,sharpnessLevel);
             opennow::LogAppLifecycleEvent("SETTINGS_SHARPNESS_LOADED",shDetail);
         }
-        if(fields>=13 && dm>=0 && dm<=2) decoderMode=savedDecoderMode=dm;
-        if(fields>=14 && sm>=0 && sm<=1) scaleMode=savedScaleMode=sm;
+        // El decodificador por hardware no funciona en este firmware (libSceVideodec2 rc=0x805A1000)
+        // y la fila es de solo lectura: se fija SOFTWARE (2) aunque el fichero guarde otro valor.
+        // Con AUTO/HARDWARE se ejecutaban en CADA arranque pruebas de funciones no verificadas cuyo
+        // resultado no se usa para nada.
+        (void)dm;
+        decoderMode=savedDecoderMode=2;
+        // 1080p esta descartado (ver resolution_to_wh y el techo de PS4VideoOutRenderer). Un 1 guardado
+        // solo podia venir del bug de la X en la fila DECODIFICADOR: se normaliza a 720p.
+        (void)sm;
+        scaleMode=savedScaleMode=0;
         fclose(file);
     }
     savedBetaDisclaimerDontShowAgain=betaDisclaimerDontShowAgain;
@@ -4041,6 +4166,7 @@ static bool saveSettings() {
                   stream.game_language.c_str());
     opennow::LogAppLifecycleEvent("STREAM_QUALITY_APPLIED",qualityDetail);
     stream.region=streamRegion;
+    stream.region_provider_code=streamRegion=="Auto"?std::string():streamRegionProvider;
     stream.preset_id="custom"; stream.label="AJ Personalizado";
     if(!opennow::SaveStreamSettings(stream)) { saveResult=-1; return false; }
     mkdir("/data/gfnps4",0777);
@@ -4057,6 +4183,10 @@ static bool saveSettings() {
     savedNetworkMode=networkMode;
     savedBetaDisclaimerDontShowAgain=betaDisclaimerDontShowAgain;
     savedStreamRegion=streamRegion;
+    savedStreamRegionProvider=streamRegionProvider;
+    // Antes estas copias no se actualizaban al guardar: "salir sin guardar" devolvia los valores del
+    // arranque y no los ultimos guardados.
+    savedImageQualityMode=imageQualityMode; savedAudioBufferMs=audioBufferMs; savedGameLanguage=gameLanguage;
     saveResult=1;
     opennow::LogAppLifecycleEvent("STREAM_SETTINGS_SAVED",
         ("resolution=" + std::string(resolution==0?"auto":(resolution==1?"720p":"1080p")) +
@@ -4066,6 +4196,9 @@ static bool saveSettings() {
 }
 static void discardSettings() {
     resolution=savedResolution; bitrate=savedBitrate; fps=savedFps; networkMode=savedNetworkMode; language=savedLanguage; rememberLogin=savedRememberLogin; inputDevice=savedInputDevice; streamRegion=savedStreamRegion;
+    // Estos ajustes tambien tienen copia guardada y no se restauraban al salir sin guardar.
+    streamRegionProvider=savedStreamRegionProvider; sharpnessLevel=savedSharpnessLevel; decoderMode=savedDecoderMode; scaleMode=savedScaleMode;
+    imageQualityMode=savedImageQualityMode; audioBufferMs=savedAudioBufferMs; gameLanguage=savedGameLanguage;
 }
 static int launchSelectedGame(void*) {
     opennow::AuthSession session;
@@ -4231,7 +4364,7 @@ static void joinAndAdoptStreamWorker(bool waitWhileConnecting=false) {
         } else {
             opennow::WriteStreamStartupStage("stream_worker_returned_without_stream");
             SDL_LockMutex(launchMutex);
-            snprintf(launchError,sizeof(launchError),"El hilo de conexiÃƒÆ’Ã‚Â³n terminÃƒÆ’Ã‚Â³ sin entregar la sesiÃƒÆ’Ã‚Â³n WebRTC.");
+            snprintf(launchError,sizeof(launchError),"El hilo de conexion termino sin entregar la sesion WebRTC.");
             SDL_UnlockMutex(launchMutex);
             streamStartState.store(3,std::memory_order_release);
         }
@@ -4852,56 +4985,18 @@ static void activate() {
         settingsRegionPickerVisible=true;
     }
     else if (page==1 && selection==12) startSpeedTest();
-    // Fila 7: modo de decodificador (AUTO / HARDWARE / SOFTWARE).
-    else if (page==1 && selection==7) {
-        decoderMode=(decoderMode+1)%3;
-        opennow::LogAppLifecycleEvent("SETTINGS_DECODER_CHANGED",
-            (std::string("mode=")+std::to_string(decoderMode)).c_str());
-        // Al elegir HARDWARE se intenta solicitar el recurso del decodificador por ARBITRACION.
-        //
-        // POR QUE AQUI Y NO EN EL ARRANQUE: en la 3.11 la llamada estaba en el arranque y la
-        // aplicacion dejaba de arrancar (el log se cortaba tras BOOT_WINDOW_SIZE, con "Se produjo un
-        // error en la aplicacion"), porque las firmas de arbitracion estan DEDUCIDAS y no
-        // verificadas. Detras de una accion explicita del usuario, el arranque es SIEMPRE seguro y,
-        // si la llamada terminase el proceso, se sabria que la causa exacta fue esta accion.
-        //
-        // El intento se registra ANTES de llamar para que quede constancia aunque no regrese.
-        if (decoderMode==1) {
-            // PROBE DEL DECODIFICADOR POR HARDWARE (API v2) con la secuencia completa.
-            //
-            // NO se llama a la arbitracion (libSceVideoDecoderArbitration): sus firmas NO estan
-            // verificadas y fueron justo lo que dejo la aplicacion sin arrancar en la 3.11. Las
-            // firmas de `sceVideodec2*` SI lo estan (coinciden con prosper), asi que se usan
-            // directamente y son las que de verdad seleccionan el decodificador por hardware: la v1
-            // solo probaba `codecType` contra OTRA API, y por eso devolvia 0x80C10001 siempre.
-            //
-            // Se ejecuta aqui y no en el arranque por la misma leccion: detras de una accion
-            // explicita, el arranque es seguro y el intento queda registrado paso a paso.
-            opennow::LogAppLifecycleEvent("HWVDEC_ATTEMPT",
-                                          "trigger=user_selected_hardware api=v1_then_v2");
-            // v1 primero (su modulo carga), v2 despues (con guardia).
-            const opennow::videodec1_probe::VideoDecodeV1ProbeResult pr1 =
-                opennow::videodec1_probe::RunVideoDecodeV1Probe();
-            (void)pr1;
-            const opennow::videodec2_probe::HardwareDecodeProbeResult pr =
-                opennow::videodec2_probe::RunHardwareDecodeProbe();
-            (void)pr;
-        }
-    }
-    // Fila 8: resolucion FIJA del framebuffer (720P / 1080P).
-    else if (page==1 && selection==8) {
-        scaleMode=(scaleMode+1)%2;
-        opennow::LogAppLifecycleEvent("SETTINGS_FRAMEBUFFER_RESOLUTION_CHANGED",
-            (std::string("mode=")+std::to_string(scaleMode)+
-             " name="+(scaleMode==1?"1080p_fixed":"720p_fixed")).c_str());
-    }
-    // Fila 9: realce de nitidez del escalador. Se cicla con izquierda/derecha; el valor se guarda
-    // con el resto de ajustes y se envia al renderizador al arrancar el stream.
-    else if (page==1 && selection==9) {
-        sharpnessLevel=(sharpnessLevel+1)%4;
-        opennow::LogAppLifecycleEvent("SETTINGS_SHARPNESS_CHANGED",
-            (std::string("level=")+std::to_string(sharpnessLevel)).c_str());
-    }
+    // FILAS 7-10 CON LA X. Deben coincidir con adjust() y con las etiquetas de draw():
+    //   7 IDIOMA DEL JUEGO | 8 DECODIFICADOR (solo lectura) | 9 RESOLUCION DE VIDEO (solo lectura)
+    //   10 REALCE DE NITIDEZ
+    //
+    // BUG CORREGIDO: la X seguia la numeracion antigua de las filas. En "IDIOMA DEL JUEGO" cambiaba
+    // el modo del decodificador y, al quedar en HARDWARE, lanzaba la prueba del decodificador por
+    // hardware (funciones sin firmas verificadas, la misma familia que cerro la app en la 3.11). En
+    // "DECODIFICADOR" cambiaba el framebuffer a 1080p, en la fila informativa cambiaba la nitidez y
+    // en "REALCE" no hacia nada.
+    else if (page==1 && selection==7) adjust(1);
+    else if (page==1 && (selection==8 || selection==9)) { /* filas informativas: sin accion */ }
+    else if (page==1 && selection==10) adjust(1);
     // Fila 13: volver a mostrar el aviso de version beta.
     //
     // Existe porque el aviso se puede silenciar para siempre ("NO VOLVER A MOSTRAR ESTE
@@ -4938,6 +5033,7 @@ static void activate() {
         else startGfnLogin();
     }
     else if (page==4 && selection==1) { cancelGfnLogin(); page=0; selection=2; }
+    else if (page==4 && selection==3) cycleLoginProvider(1);
     else if(page==4 && selection==2) {
         const bool previous=rememberLogin; rememberLogin=!rememberLogin;
         if(!saveSettings()) { rememberLogin=previous; savedRememberLogin=previous; }
@@ -5518,7 +5614,7 @@ static void draw() {
         fill(165,428,18,18,color(118,255,66));
         label(215,422,"SERVIDOR DE NVIDIA LISTO",2);
         fill(165,493,18,18,color(255,190,60));
-        label(215,487,"CONECTANDO LA SEÃƒÆ’Ã¢â‚¬ËœALIZACION SEGURA",2);
+        label(215,487,"CONECTANDO LA SENALIZACION SEGURA",2);
         fill(165,558,18,18,color(49,62,79));
         label(215,552,"ICE, VIDEO Y AUDIO SE ACTIVARAN DESPUES",2);
         label(120,735,"LA PRIMERA CONEXION PUEDE TARDAR UNOS SEGUNDOS.",2);
@@ -7049,7 +7145,14 @@ static void draw() {
         label(120,235,"INICIAR SESION EN GEFORCE NOW",4);
         panel(120,300,1680,570,false);
         int state=authState.load();
-        if(state==1) label(180,345,"CONECTANDO CON NVIDIA...",3);
+        std::string providerName;
+        size_t providerCount=0;
+        SDL_LockMutex(authMutex);
+        providerName=(state==3 && !authSession.provider.display_name.empty())?authSession.provider.display_name:loginProviderName;
+        providerCount=loginProviders.size();
+        SDL_UnlockMutex(authMutex);
+        if(providerName.empty()) providerName=(state==1)?(language==0?"CARGANDO...":"LOADING..."):"NVIDIA";
+        if(state==1) label(180,345,((language==0?"CONECTANDO CON ":"CONNECTING TO ")+providerName+"...").c_str(),3);
         else if(state==2) {
             opennow::QrLoginChallenge challenge;
             SDL_LockMutex(authMutex); challenge=authChallenge; SDL_UnlockMutex(authMutex);
@@ -7066,16 +7169,25 @@ static void draw() {
             }
             char code[96]; snprintf(code,sizeof(code),"CODIGO: %s",challenge.user_code.c_str());
             label(180,425,code,4);
-            label(180,495,"ABRE NVIDIA.COM/LOGIN EN TU TELEFONO",2);
-            label(180,540,rememberLogin?"SESION GUARDADA CIFRADA EN ESTE PS4":"LA CUENTA SE MANTIENE SOLO EN MEMORIA",2);
+            if(!challenge.verification_uri.empty())
+                label(180,495,((language==0?"O ABRE ":"OR OPEN ")+challenge.verification_uri+(language==0?" E INTRODUCE EL CODIGO":" AND ENTER THE CODE")).c_str(),2);
+            else label(180,495,"ABRE NVIDIA.COM/LOGIN EN TU TELEFONO",2);
+            label(180,585,language==0?"CUENTA DE OTRA EMPRESA (DIGEVO...)? CAMBIA EL PROVEEDOR ABAJO":"ACCOUNT FROM A PARTNER (DIGEVO...)? CHANGE THE PROVIDER BELOW",2);
+            label(180,540,rememberLogin?"SESION GUARDADA EN ESTE PS4 (NO COMPARTAS /data/gfnps4)":"LA CUENTA SE MANTIENE SOLO EN MEMORIA",2);
         } else if(state==3) {
             label(180,360,"SESION AUTORIZADA EN ESTA EJECUCION",3);
             label(180,435,"SIGUIENTE: CATALOGO Y SESION DE JUEGO",2);
+            label(180,480,((language==0?"CUENTA DE ":"ACCOUNT FROM ")+providerName).c_str(),2);
         } else if(state==4) {
             char error[180];
             SDL_LockMutex(authMutex); snprintf(error,sizeof(error),"ERROR: %.150s",authError.c_str()); SDL_UnlockMutex(authMutex);
             label(180,355,error,2);
         } else label(180,355,"PULSA X PARA SOLICITAR UN NUEVO CODIGO",2);
+        if(state==0 || state==4)
+            label(180,420,language==0?"ELIGE PRIMERO LA EMPRESA DE TU CUENTA EN LA FILA PROVEEDOR (IZQUIERDA/DERECHA)":"FIRST PICK YOUR ACCOUNT COMPANY IN THE PROVIDER ROW (LEFT/RIGHT)",2);
+        panel(120,705,1100,62,selection==3);
+        label(155,725,((language==0?"PROVEEDOR: ":"PROVIDER: ")+providerName).c_str(),2);
+        if(state!=3) label(830,725,providerCount>1?(language==0?"< IZQ / DER >":"< LEFT / RIGHT >"):(language==0?"X: CARGAR LISTA":"X: LOAD LIST"),2);
         panel(120,790,1680,62,selection==2); label(155,810,rememberLogin?"[X] MANTENER SESION INICIADA":"[ ] MANTENER SESION INICIADA",2); label(850,810,rememberLogin?"ACTIVADO":"DESACTIVADO",2);
         panel(120,895,820,75,selection==0); label(165,920,(state==1||state==2)?(language==0?"CANCELAR":"CANCEL"):(state==3?(language==0?"CERRAR SESION":"SIGN OUT"):(language==0?"INTENTAR DE NUEVO":"TRY AGAIN")),2);
         panel(980,895,820,75,selection==1); label(1025,920,"VOLVER AL INICIO",2);
@@ -7801,7 +7913,8 @@ int main(int argc,char** argv) {
         // usa en esta misma consola. Puede que no necesite carga explicita y baste con llamar a sus
         // funciones, o que requiera `sceSysmoduleLoadModuleInternal`. Este probe lo averigua:
         // llama DIRECTAMENTE a la ABI v2 y registra el codigo real de cada paso.
-        if (decoderMode==0 || decoderMode==1) {
+        // Solo con HARDWARE elegido explicitamente (hoy imposible desde la UI: ver loadSettings).
+        if (decoderMode==1) {
             char at[160];
             std::snprintf(at, sizeof(at),
                           "trigger=stream_start decoder_mode=%d api=v2 sysmodule_load_unknown_but_linked",
@@ -7851,10 +7964,16 @@ int main(int argc,char** argv) {
     authMutex=SDL_CreateMutex();
     launchMutex=SDL_CreateMutex();
     if(!networkMutex || !authMutex || !launchMutex) { opennow::LogAppLifecycleEvent("APP_INIT_FAILED","stage=mutex"); if(networkMutex) SDL_DestroyMutex(networkMutex); if(authMutex) SDL_DestroyMutex(authMutex); if(launchMutex) SDL_DestroyMutex(launchMutex); sceNetTerm(); SDL_Quit(); return 5; }
+    loadLoginProviderPreference();
     if(rememberLogin) {
         try {
             opennow::GfnClient client; opennow::AuthSession saved;
-            if(client.LoadSavedSession(saved)) { saved.persistence_enabled=true; authSession=std::move(saved); authState.store(3); opennow::LogAppLifecycleEvent("AUTH_RESTORED","source=encrypted_local_vault"); }
+            if(client.LoadSavedSession(saved)) {
+                saved.persistence_enabled=true;
+                loginProviderCode=saved.provider.code; loginProviderName=saved.provider.display_name;
+                authSession=std::move(saved); authState.store(3);
+                opennow::LogAppLifecycleEvent("AUTH_RESTORED",("source=encrypted_local_vault provider="+loginProviderCode).c_str());
+            }
             else {
                 struct stat vaultInfo{},deviceInfo{};
                 const bool vaultExists=stat("/data/gfnps4/auth_accounts.json",&vaultInfo)==0;

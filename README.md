@@ -115,8 +115,19 @@ El Title ID es `GFNP00001`. Es el único que la consola aceptaba después de muc
 ## Cómo se usa
 
 1. Abres la app y aceptas el aviso beta.
-2. Le das a **Iniciar sesión** y sale un QR. Lo escaneas, autorizas en tu cuenta de NVIDIA y ya está.
+2. Le das a **Iniciar sesión** y sale un QR. Lo escaneas, autorizas en tu cuenta y ya está.
    Solo hay que hacerlo una vez.
+   - **Si tu cuenta no es de NVIDIA** sino de un socio de la GeForce NOW Alliance (por ejemplo
+     **Digevo** en Colombia/Chile), baja a la fila **PROVEEDOR** y elige tu empresa con
+     izquierda/derecha **antes** de escanear el QR. Si usas el proveedor equivocado acabarás en una
+     cuenta de NVIDIA distinta, sin tu suscripción ni tu catálogo y sin acceso a los servidores
+     de tu país. La app recuerda el proveedor que elijas.
+   - Si ya habías iniciado sesión con otra cuenta, cierra sesión primero: la región manual, la
+     lista de servidores y el catálogo guardado de la cuenta anterior ya no se reutilizan.
+   - **Mantener sesión iniciada** guarda tus tokens en `/data/gfnps4/`. Van cifrados, pero la clave
+     sale de `device_id.txt`, que está en la misma carpeta: quien tenga acceso a esa carpeta (por
+     ejemplo por FTP) puede usar tu sesión. No compartas esos archivos y desactiva la opción si otras
+     personas tienen acceso a tu consola.
 3. Navegas el catálogo, eliges juego y esperas la cola.
 4. Cuando entras, el mando va a 125 Hz. El menú de la app se abre con PS/Options.
 

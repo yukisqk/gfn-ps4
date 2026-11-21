@@ -16,6 +16,10 @@ struct StreamSettings
     int bitrate_kbps      = 12000;
     std::string codec     = "H264";
     std::string region    = "Auto";
+    // Proveedor (loginProviderCode) al que pertenece `region`. Cada socio de la GeForce NOW
+    // Alliance (Digevo, etc.) tiene sus propios servidores: una URL elegida con una cuenta de
+    // NVIDIA no sirve para una cuenta de otro proveedor. Vacio = NVIDIA (ficheros antiguos).
+    std::string region_provider_code;
     bool audio_enabled    = true;
     int audio_volume      = 1200;
     int audio_buffer_ms   = 40;

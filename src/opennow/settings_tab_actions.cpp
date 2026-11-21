@@ -359,6 +359,13 @@ bool SettingsTab::ChooseServerLocation(brls::View* view)
                 index == 0 || static_cast<size_t>(index) > options.size()
                 ? "Auto"
                 : options[static_cast<size_t>(index - 1)].url;
+            draft_settings_.region_provider_code.clear();
+            if (draft_settings_.region != "Auto")
+            {
+                const auto& session = AppState::Instance().session();
+                if (session)
+                    draft_settings_.region_provider_code = session->provider.code;
+            }
             MarkDirty();
             UpdateOptionValues();
         },
